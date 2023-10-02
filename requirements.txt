@@ -1,0 +1,7 @@
+argparse
+pyaudio
+wave
+pyttsx3
+SpeechRecognition
+openai
+pygame

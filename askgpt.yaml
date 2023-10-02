@@ -1,0 +1,22 @@
+---
+diewords:
+  - kill
+  - verrecke
+  - stirb
+  - ende
+sleepwords:
+  - sleep
+  - geh schlafen
+  - geschlafen
+  - schlafen
+  - idle
+  - aufhören
+risewords:
+  - listen
+  - wake up
+  - aufwachen
+  - zuhören
+statuswords:
+  - status
+  - stats
+  - awareness

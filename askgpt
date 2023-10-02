@@ -1,0 +1,298 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+#
+# Written by d0n <d0n@janeiskla.de>
+#
+
+import sys
+
+from os import \
+    makedirs, environ, \
+    getcwd, chdir, remove, \
+    stat as osstat, symlink, access, \
+    listdir, X_OK as XOK
+
+from os.path import \
+    join as pjoin, \
+    expanduser, isdir, \
+    basename, isfile, \
+    abspath, dirname, \
+    exists, getmtime
+
+from argparse import ArgumentParser
+
+from time import time, sleep
+
+from pyaudio import PyAudio, paInt16
+
+from wave import open as wavopen
+
+from pyttsx3 import init as pyttsx3init, Engine
+
+from speech_recognition import \
+    AudioFile as SRAudioFile, \
+    Recognizer as SRRecognizer, \
+    Microphone as SRMicrophone, \
+    UnknownValueError as SRUnknownValueError, \
+    RequestError as SRRequestError, \
+    WaitTimeoutError as RSWaitTimeoutError
+
+from yaml import load as yload, Loader
+
+environ['PYGAME_HIDE_SUPPORT_PROMPT'] = 'hide'
+
+from pygame import mixer, _sdl2 as devices
+
+import openai
+
+class AskGPT(object):
+	dbg = False
+	vrb = False
+	botcfg = {}
+	language = 'en-US'
+	test = None
+	birth = int(str(time()).split('.')[0])
+	isaware = None
+	joined = None
+	micnames = [str(m) for m in list(SRMicrophone.list_microphone_names())]
+	micname = [m for m in micnames if 'mikrofon' in str(m).lower()]
+	_micname = micname = micname if not micname else micname[0]
+	if not _micname:
+		micname = [m for m in micnames if 'realtek' in str(m).lower()]
+		_micname = micname = micname if not micname else micname[0]
+	mic = None
+	src = SRRecognizer()
+	if micname:
+		mic = SRMicrophone(device_index=micnames.index(micname))
+	opad = PyAudio().get_default_output_device_info()
+	default_output = opad['name']
+	out = None
+	mixer.init()
+	outputs = devices.audio.get_audio_device_names(False)
+	mixer.quit()
+	cmd = ''
+	c = 0
+	ts = []
+	spks = []
+	swms = []
+	engine = 'gpt-3.5-turb'
+	diewords = ['kill', 'verrecke', 'stirb', 'ende']
+	sleepwords = ['sleep', 'geh schlafen', 'geschlafen', 'schlafen', 'idle', 'aufhören']
+	risewords = ['listen', 'wake up', 'aufwachen', 'zuhören']
+	statuswords = ['status', 'stats', 'awareness']
+	fchan = ''
+	tchan = ''
+	botvoice = None
+	lang = 'de-DE'
+	def __init__(self, *args, **kwargs):
+		for a in args:
+			if hasattr(self, a):
+				setattr(self, a, True)
+		for (k, v) in kwargs.items():
+			if k == 'micname':
+				setattr(self, 'micname', [m for m in self.micnames if v.lower() in str(m).lower()][0])
+				continue
+			if k == 'apikey':
+				openai.api_key = v
+			if hasattr(self, k):
+				if str(v).startswith('~'):
+					v = expanduser(v)
+				if k == 'config':
+					self.cfgdir = dirname(v)
+				setattr(self, k, v)
+		super().__init__()
+		if self.dbg:
+			print(bgre(AskGPT.__mro__), flush=True)
+			print(bgre(tabd(AskGPT.__dict__, 2)), flush=True)
+			print(' ', bgre(self.__init__), flush=True)
+			print(bgre(tabd(self.__dict__, 4)), flush=True)
+
+	def text2speech(self, text, lang='en'):
+		if self.dbg:
+			print(bgre(self.text2speech), flush=True)
+		engine = pyttsx3init()
+		voices = engine.getProperty('voices')
+		engine.setProperty('voice', voices[1].id)
+		if lang == 'de':
+			engine.setProperty('voice', voices[0].id)
+		engine.setProperty('volume', 1.5)
+		engine.setProperty('rate', 145)
+		if self.out:
+			#print(self.out, flush=True)
+			#print(self.outputs, flush=True)
+			output = [o for o in self.outputs if self.out.lower() in o.lower()][0]
+			#print(output, flush=True)
+			mixer.init(devicename=output)
+			engine = Engine()
+			engine.save_to_file(text, 'speech.wav')
+		else:
+			engine.say(text)
+		engine.runAndWait()
+		if self.out:
+			mixer.music.load('speech.wav')
+			mixer.music.play()
+
+	def miclisten(self, setmic):
+		self.c = int(self.c+1)
+		if self.dbg:
+			print(bgre('%s\n  %s'%(self.miclisten, self.c)), flush=True)
+		if setmic and setmic != self.micname:
+			m = [m for m in self.micnames if setmic.lower() in m.lower()]
+			m = m if not m else m[0]
+			if not m:
+				error('could not find microphone with %s in it\'s name'%setmic)
+				return
+			self.mic = SRMicrophone(device_index=self.micnames.index(m))
+		spoken = ''
+		while True:
+			despoken, enspoken = None, None
+			with self.mic as spoken:
+				try:
+					spoken = self.src.listen(spoken, phrase_time_limit=5, timeout=0.175)
+				except RSWaitTimeoutError:
+					spoken = ''
+			if not spoken:
+				continue
+			try:
+				spokenstr = str(self.src.recognize_google(spoken, language=self.language, pfilter=0))
+			except (SRUnknownValueError, SRRequestError):
+				spokenstr = None
+			if spokenstr:
+				break
+			spoken = ''
+		return spokenstr
+
+	def conversation(self):
+		if self.dbg:
+			print(bgre(self.conversation), flush=True)
+		print('ready...', flush=True)
+		self.text2speech('hello master', 'en')
+		print(dir(openai.ChatCompletion))
+		self.isaware = True
+		msgs = []
+		while True:
+			age = int(int(str(time()).split('.')[0])-self.birth)
+			try:
+				spoken = self.miclisten(self.micname)
+			except KeyboardInterrupt:
+				self.cleanup()
+			spoken = spoken if not spoken else spoken.lower()
+			if spoken in self.statuswords:
+				self.text2speech('listening' if self.isaware else 'not listening', 'en')
+				continue
+			elif spoken in self.diewords:
+				self.isaware = False
+				self.text2speech('farewell!', 'en')
+				exit(0)
+			elif spoken in self.risewords:
+				self.isaware = True
+				self.text2speech('yes, master?', 'en')
+				msgs = []
+			elif self.isaware:
+				if spoken in self.sleepwords:
+					self.isaware = False
+					self.text2speech('sleeping', 'en')
+					msgs = []
+				else:
+					msgs.append({"role": "user", "content": spoken})
+					chat = openai.ChatCompletion.create(model=self.engine, messages=msgs)
+					reply = chat.choices[0].message.content
+					if self.vrb:
+						print(f'Me: {spoken}\nGPT: {reply}', flush=True)
+					msgs.append({"role": "assistant", "content": reply})
+					self.text2speech(reply, self.language.split('-')[0])
+
+	def cleanup(self):
+		try:
+			remove('speech.wav')
+			exit(0)
+		except PermissionError:
+			print(f'could not remove created wav for using a different output device: {getcwd()}/speech.wav')
+			exit(1)
+
+
+def cli():
+	__me = basename(dirname(__file__))
+	__cwd = getcwd()
+	_cfg = expanduser('~/.config/askgpt.yaml')
+	_cfg = _cfg if isfile(_cfg) else '%s/askgpt.yaml'%dirname(__file__)
+	cfg = {}
+	if isfile(_cfg):
+		with open(_cfg, 'r') as cfg:
+			cfg = yload(cfg.read(), Loader=Loader)
+	pars = ArgumentParser()
+	paddgrp = pars.add_argument_group
+	bhavs = paddgrp('behaviour')
+	bhavs.add_argument(
+        '-d', '--debug',
+        dest='dbg', action='store_true', help='debugging mode')
+	bhavs.add_argument(
+        '-v', '--verbose',
+        dest='vrb', default=None,
+        action='store_true', help='enable verbose output')
+	pars.add_argument(
+        '-E', '--list-engines',
+        dest='els', action='store_true', help='list ChatGPT engines')
+	pars.add_argument(
+        '-e', '--engine',
+        dest='engine', default='gpt-3.5-turbo', help='ChatGPT engine name')
+	pars.add_argument(
+        '-k', '--key',
+        dest='apikey', help='ChatGPT API-Key')
+	pars.add_argument(
+        '-M', '--list-mics',
+        dest='mls', action='store_true', help='list all microphones available on the system')
+	pars.add_argument(
+        '-m', '--mic',
+        dest='micname', metavar='MICROFON', help='use the microphone matching MICROFON for listening')
+	pars.add_argument(
+        '-l', '--lang',
+        dest='language', help='set language to interpret voice input/optput')
+	pars.add_argument(
+        '-O', '--list-outputs',
+        dest='ols', action='store_true', help='list available output devices')
+	pars.add_argument(
+        '-o', '--output',
+        dest='output', help='use the output device matching OUTPUT as sound device')
+	args = pars.parse_args()
+	gptargs = []
+	gptkwargs = dict(cfg.items())
+	gptkwargs['engine'] = args.engine
+	#print(gptkwargs)
+	if args.dbg:
+		gptargs.append('dbg')
+	if args.vrb:
+		gptargs.append('vrb')
+	if args.language:
+		gptkwargs['language'] = args.language
+	if args.apikey:
+		gptkwargs['apikey'] = args.apikey
+	if args.micname:
+		gptkwargs['micname'] = args.micname
+	if args.micname:
+		gptkwargs['out'] = args.output
+	gpt = AskGPT(*gptargs, **gptkwargs)
+	if args.mls:
+		print(gpt.micnames, flush=True)
+		print(gpt.micname, flush=True)
+		exit()
+	if args.els:
+		try:
+			print('\n'.join(sorted([i['id'] for i in openai.Model.list()['data']])), flush=True)
+			print(gpt.engine, flush=True)
+		except openai.error.AuthenticationError:
+			print('Error: Please provide an API-Key for this to work. See output without any parameters how to create one.', flush=True)
+			exit(1)
+		exit()
+	if args.ols:
+		print(gpt.outputs, flush=True)
+		print(gpt.default_output if not args.output else args.output, flush=True)
+		exit()
+	if not args.apikey:
+		print('Error: You need to generate a personal account for ChatGPT to use this here:\nhttps://beta.openai.com/signup\nas well as an API-Key here:\nhttps://beta.openai.com/account/api-keys', flush=True)
+		exit(1)
+	gpt.conversation()
+
+if __name__ == '__main__':
+	cli()
